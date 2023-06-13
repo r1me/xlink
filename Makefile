@@ -1,10 +1,12 @@
-PREFIX=/usr/local
+PREFIX=/usr
 SYSCONFDIR=/etc
-KASM?=java -jar /usr/share/kickassembler/KickAss.jar
+KASM?=kasm3
 
 MINGW32?=i686-w64-mingw32
 MINGW32-GCC=$(MINGW32)-gcc
 MINGW32-WINDRES=$(MINGW32)-windres
+MINGW32-CFLAGS=-DCLIENT_VERSION="$(VERSION)" -std=gnu99 -Wall -Wno-format-security \
+	-O3 -I. -I/usr/$(MINGW32)/include
 
 VERSION=1.3
 XLINK_SERIAL:=$(XLINK_SERIAL)
@@ -12,12 +14,14 @@ XLINK_SERIAL:=$(XLINK_SERIAL)
 SHELL=/bin/bash
 CC?=gcc
 GCC=gcc
-CFLAGS=-DCLIENT_VERSION="$(VERSION)" -std=gnu99 -Wall -Wno-format-security -O3 -I. -I$(PREFIX)/include
+CFLAGS=-DCLIENT_VERSION="$(VERSION)" -std=gnu99 -Wall -Wno-format-security -O3 \
+	-I. -I$(PREFIX)/include -I/usr/include
 
 AVRDUDE=avrdude
 AVRDUDE_FLAGS=-c arduino -b 57600 -P /dev/ttyUSB0 -p atmega328p -F -u
 
-INPOUT32_BINARIES=http://www.highrez.co.uk/scripts/download.asp?package=InpOutBinaries
+INPOUT32_BINARIES=http://www.henning-liebenau.de/download/xlink/inpout32.zip
+INPOUT32_BINARIES_MD5=http://www.henning-liebenau.de/download/xlink/inpout32.zip.md5
 
 LIBHEADERS=\
 	xlink.h \
@@ -45,7 +49,7 @@ LIBSOURCES=\
 	driver/shm.c \
 	driver/serial.c
 
-LIBFLAGS=-DXLINK_LIBRARY_BUILD -L. -L$(PREFIX)/lib
+LIBFLAGS=-DXLINK_LIBRARY_BUILD -L. -L/usr/lib -L$(PREFIX)/lib
 LIBEXT=so
 
 UNAME=$(shell uname)
@@ -71,7 +75,6 @@ bootstrap-c64: bootstrap-c64.txt
 bootstrap-test-c64: bootstrap-test-c64.prg
 bootstrap-c128: bootstrap-c128.txt
 bootstrap-test-c128: bootstrap-test-c128.prg
-prepare-msi: clean win32 firmware xlink.lib
 
 testsuite: testsuite.c range.c
 	$(CC) -o testsuite testsuite.c range.c
@@ -84,18 +87,19 @@ libxlink.$(LIBEXT): $(LIBHEADERS) $(LIBSOURCES)
 		-o libxlink.$(LIBEXT) $(LIBSOURCES) -lusb-1.0
 
 xlink: libxlink.$(LIBEXT) client.c client.h range.c range.h help.c
-	$(CC) $(CFLAGS) -o xlink client.c range.c -L. -lxlink 
+	$(CC) $(CFLAGS) -o xlink client.c range.c -L. -lxlink
 
 xlink.res.o: xlink.rc
 	$(MINGW32-WINDRES) -i xlink.rc -o xlink.res.o
 
-xlink.dll: $(LIBHEADERS) $(LIBSOURCES) inpout32 xlink.res.o
-	$(MINGW32-GCC) $(CFLAGS) $(LIBFLAGS) -static-libgcc -Wl,--enable-stdcall-fixup -shared \
+xlink.dll: $(LIBHEADERS) $(LIBSOURCES) inpout32.dll xlink.res.o
+	$(MINGW32-GCC) $(MINGW32-CFLAGS) -DXLINK_LIBRARY_BUILD -L. -L/usr/$(MINGW32)/lib \
+		-static-libgcc -Wl,--enable-stdcall-fixup -shared \
 		-o xlink.dll $(LIBSOURCES) xlink.res.o -lusb-1.0 -linpout32
 
-xlink.exe: xlink.dll client.c client.h range.c range.h help.c xlink.lib-clean 
-	$(MINGW32-GCC) $(CFLAGS) -static-libgcc -o xlink.exe \
-		client.c range.c -L. -lxlink 
+xlink.exe: xlink.dll client.c client.h range.c range.h help.c xlink.lib-clean
+	$(MINGW32-GCC) $(MINGW32-CFLAGS) -static-libgcc -o xlink.exe \
+		client.c range.c -L. -L/usr/$(MINGW32)/lib -lxlink
 
 xlink.lib: xlink.dll
 	dos2unix tools/make-msvc-lib.sh
@@ -104,8 +108,10 @@ xlink.lib: xlink.dll
 xlink.lib-clean:
 	[ -f xlink.lib ] && rm -v xlink.lib || true
 
-inpout32:
-	wget -O inpout32.zip $(INPOUT32_BINARIES) && \
+inpout32.dll:
+	wget -4 $(INPOUT32_BINARIES) && \
+	wget -4 $(INPOUT32_BINARIES_MD5) && \
+	md5sum -c inpout32.zip.md5 && \
 	unzip -d inpout32 inpout32.zip && \
 	cp inpout32/Win32/inpout32.h . && \
 	cp inpout32/Win32/inpout32.dll . && \
@@ -114,19 +120,21 @@ inpout32:
 tools/make-server: tools/make-server.c
 	$(CC) $(CFLAGS) -o tools/make-server tools/make-server.c
 
-server64.c: tools/make-server server.h server64.asm loader.asm 
+server64.c: tools/make-server server.h server64.asm loader.asm
 	$(KASM) :target=c64 :pc=257 -o base server64.asm  # 257 = 0101
 	$(KASM) :target=c64 :pc=513 -o high server64.asm  # 513 = 0201
 	$(KASM) :target=c64 :pc=258 -o low  server64.asm  # 258 = 0102
-	(let size=$$(stat --format=%s base)-2 && $(KASM) :size="$$size" :target=c64 -o loader loader.asm)
+	(let size=$$(stat --format=%s base)-2 && $(KASM) :size="$$size" \
+		:target=c64 -o loader loader.asm)
 	tools/make-server c64 base low high loader > server64.c
 	rm -v base low high loader
 
-server128.c: tools/make-server server.h server128.asm loader.asm 
+server128.c: tools/make-server server.h server128.asm loader.asm
 	$(KASM) :target=c128 :pc=257 -o base server128.asm  # 257 = 0101
 	$(KASM) :target=c128 :pc=513 -o high server128.asm  # 513 = 0201
 	$(KASM) :target=c128 :pc=258 -o low  server128.asm  # 258 = 0102
-	(let size=$$(stat --format=%s base)-2 && $(KASM) :size="$$size" :target=c128 -o loader loader.asm)
+	(let size=$$(stat --format=%s base)-2 && $(KASM) :size="$$size" \
+		:target=c128 -o loader loader.asm)
 	tools/make-server c128 base low high loader > server128.c
 	rm -v base low high loader
 
@@ -220,9 +228,9 @@ install: xlink cbm
 ifeq ($(UNAME), Linux)
 		install -m644 -D etc/udev/rules.d/10-xlink.rules \
 			$(DESTDIR)$(SYSCONFDIR)/udev/rules.d/10-xlink.rules || true
-endif	
+endif
 
-	install -d $(DESTDIR)$(SYSCONFDIR)/bash_completion.d/	
+	install -d $(DESTDIR)$(SYSCONFDIR)/bash_completion.d/
 	install -m644 etc/bash_completion.d/xlink \
 			$(DESTDIR)$(SYSCONFDIR)/bash_completion.d/
 
@@ -265,7 +273,8 @@ clean: firmware-clean servant64-clean
 	[ -f log ] && rm -v log || true
 
 distclean: clean
-	rm -rf inpout32* || true
+	rm -rf inpout{32,x64}* || true
+	rm -rf libusb-1.0* || true
 
 release: distclean
 	git archive --prefix=xlink-$(VERSION)/ -o ../xlink-$(VERSION).tar.gz HEAD && \
@@ -277,4 +286,20 @@ macosx-package: ../xlink-$(VERSION)-macosx.tar.gz
 	make DESTDIR=stage PREFIX=/usr/local install && \
 	(cd stage && tar vczf ../../xlink-$(VERSION)-macosx.tar.gz .) && \
 	rm -rf stage && \
-	$(MD5SUM) ../xlink-$(VERSION)-macosx.tar.gz > ../xlink-$(VERSION)-macosx.tar.gz.md5
+	$(MD5SUM) ../xlink-$(VERSION)-macosx.tar.gz > \
+		../xlink-$(VERSION)-macosx.tar.gz.md5
+
+msi: xlink.exe xlink.dll libusb-1.0.dll inpout32.dll xlink.wxs
+	wixl --arch x86 --define VERSION=$(VERSION) -o ../xlink-$(VERSION).msi xlink.wxs && \
+	$(MD5SUM) ../xlink-$(VERSION).msi > \
+		../xlink-$(VERSION).msi.md5
+	rm -rf libusb-1.0.dll
+
+libusb-1.0.26-binaries.7z:
+	wget https://github.com/libusb/libusb/releases/download/v1.0.26/libusb-1.0.26-binaries.7z
+
+libusb-1.0.26-binaries: libusb-1.0.26-binaries.7z
+	7z x -y libusb-1.0.26-binaries.7z
+
+libusb-1.0.dll: libusb-1.0.26-binaries
+	cp libusb-1.0.26-binaries/VS2015-Win32/dll/libusb-1.0.dll .

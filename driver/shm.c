@@ -36,7 +36,6 @@ static uchar last;
 
 bool driver_shm_open(void) {
   bool result = false;
-
   if(!initialized) {
     
 #if posix
@@ -52,7 +51,7 @@ bool driver_shm_open(void) {
     
     port = (xlink_port_t*) shmat(shmid, NULL, 0);
     
-    if((int)port == -1) goto error;
+    if((long)port == -1) goto error;
 
 #elif windows
     
@@ -220,11 +219,22 @@ void driver_shm_reset(void) {
   }
 
 #elif windows
+  HWND peer = NULL;
   UINT WM_USER_RESET = 0x584c;
-  HWND peer = FindWindow(port->id, NULL);
   
-  if(peer != NULL)
+  BOOL CALLBACK EnumWindowsProc(HWND parent, long unused) {
+    peer = FindWindowExA(parent, NULL, port->id, NULL);
+    return peer == NULL;
+  }
+  EnumWindows(EnumWindowsProc, 0);
+    
+  if(peer != NULL) {
     SendMessage(peer, WM_USER_RESET, 0, 0);
+  }
+  else {
+    logger->error("Could not find child window with id %s "
+                  "in any toplevel window", port->id);
+  }
 #endif
 }
 
